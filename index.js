@@ -49,6 +49,7 @@ const client = new MongoClient(process.env.DB_URI, {
 // Reference collections from database
 
 const userCollection = client.db("studentLifeDb").collection("users");
+const scheduleCollection = client.db("studentLifeDb").collection("schedules");
 
 
 
@@ -184,6 +185,43 @@ async function run() {
                 return res.status(500).send({ error: true, message: "Internal Server Error" });
             }
         });
+
+
+        //********* Schedule related APIs *********
+
+        // ✅ GET /schedules - Fetch all schedules
+        app.get('/schedules', verifyFirebaseToken, async (req, res) => {
+            try {
+                const schedules = await scheduleCollection.find().toArray();
+                res.send(schedules);
+            } catch (error) {
+                console.error("❌ Error fetching schedules:", error);
+                res.status(500).send({ error: true, message: "Internal Server Error" });
+            }
+        });
+
+        // ✅ POST /schedules - Add a new class schedule
+        app.post('/schedules', verifyFirebaseToken, async (req, res) => {
+            try {
+                const schedule = req.body;
+
+                // Add createdAt and createdBy (email) fields
+                schedule.createdAt = new Date().toISOString();
+                schedule.createdBy = req.user.email;
+
+                const result = await scheduleCollection.insertOne(schedule);
+
+                res.status(201).send({
+                    success: true,
+                    message: 'Class schedule added successfully',
+                    insertedId: result.insertedId
+                });
+            } catch (error) {
+                console.error("❌ Error adding schedule:", error);
+                res.status(500).send({ error: true, message: "Internal Server Error" });
+            }
+        });
+
 
 
         console.log("✅ Connected to MongoDB!");
