@@ -50,6 +50,7 @@ const client = new MongoClient(process.env.DB_URI, {
 
 const userCollection = client.db("studentLifeDb").collection("users");
 const scheduleCollection = client.db("studentLifeDb").collection("schedules");
+const budgetCollection = client.db("studentLifeDb").collection("budgets");
 
 
 
@@ -356,8 +357,6 @@ async function run() {
             }
         });
 
-
-
         // DELETE /schedules/:id - Delete a schedule by ID
         app.delete('/schedules/:id', verifyFirebaseToken, async (req, res) => {
             try {
@@ -376,6 +375,80 @@ async function run() {
                 res.status(500).send({ error: true, message: "Internal Server Error" });
             }
         });
+
+
+        //********* Budget related APIs *********
+
+        app.get('/budgets', verifyFirebaseToken, async (req, res) => {
+            try {
+                const email = req.user.email;
+                const transactions = await budgetCollection
+                    .find({ createdBy: email })
+                    .sort({ createdAt: -1 }) // Newest first
+                    .toArray();
+
+                res.status(200).send({ success: true, data: transactions });
+            } catch (error) {
+                console.error('❌ GET /budgets failed:', error);
+                res.status(500).send({ success: false, message: 'Internal server error' });
+            }
+        });
+
+        // ✅ Enhanced GET /budgets/history with sorting & pagination
+        app.get('/budgets/history', verifyFirebaseToken, async (req, res) => {
+            try {
+                const email = req.user.email;
+
+                const {
+                    sort = 'desc', // default to latest first
+                    page = 1,
+                    limit = 25
+                } = req.query;
+
+                const sortOrder = sort === 'asc' ? 1 : -1;
+                const currentPage = parseInt(page) || 1;
+                const perPage = parseInt(limit) || 25;
+
+                const query = { createdBy: email };
+
+                const total = await budgetCollection.countDocuments(query);
+
+                const transactions = await budgetCollection
+                    .find(query)
+                    .sort({ date: sortOrder })
+                    .skip((currentPage - 1) * perPage)
+                    .limit(perPage)
+                    .toArray();
+
+                res.status(200).send({
+                    success: true,
+                    data: transactions,
+                    page: currentPage,
+                    limit: perPage,
+                    totalPages: Math.ceil(total / perPage),
+                    total
+                });
+            } catch (error) {
+                console.error("❌ Error fetching transaction history:", error);
+                res.status(500).send({ success: false, message: "Internal Server Error" });
+            }
+        });
+
+        app.post('/budgets', verifyFirebaseToken, async (req, res) => {
+            try {
+                const transaction = req.body;
+                transaction.createdAt = new Date().toISOString();
+                transaction.createdBy = req.user.email;
+
+                const result = await budgetCollection.insertOne(transaction);
+                res.status(201).send({ success: true, insertedId: result.insertedId });
+            } catch (error) {
+                console.error('❌ POST /budgets failed:', error);
+                res.status(500).send({ success: false, message: 'Internal server error' });
+            }
+        });
+
+
 
 
         console.log("✅ Connected to MongoDB!");
