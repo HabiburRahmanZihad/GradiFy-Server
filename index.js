@@ -189,13 +189,99 @@ async function run() {
 
         //********* Schedule related APIs *********
 
-        // ✅ GET /schedules - Fetch all schedules
+        // GET /schedules - Get all schedules for the logged-in user
         app.get('/schedules', verifyFirebaseToken, async (req, res) => {
             try {
-                const schedules = await scheduleCollection.find().toArray();
-                res.send(schedules);
+                const email = req.user.email;
+                const {
+                    search = '',
+                    sortBy = 'date',       // default sort
+                    order = 'asc',
+                    page = 1,
+                    limit = 12
+                } = req.query;
+
+                const currentPage = parseInt(page) || 1;
+                const perPage = parseInt(limit) || 12;
+
+                const query = { createdBy: email };
+
+                // Search by subject (case-insensitive)
+                if (search.trim()) {
+                    query.subject = { $regex: search.trim(), $options: 'i' };
+                }
+
+                // Base cursor
+                let cursor = scheduleCollection.find(query);
+
+                // Sort
+                const sortOptions = {};
+
+                if (sortBy === 'priority') {
+                    // Custom priority sort (High = 1, Low = 3)
+                    const priorityMap = { High: 1, Medium: 2, Low: 3 };
+
+                    const schedules = await cursor.toArray();
+
+                    schedules.sort((a, b) => {
+                        const aVal = priorityMap[a.priority] || 4;
+                        const bVal = priorityMap[b.priority] || 4;
+                        return order === 'desc' ? bVal - aVal : aVal - bVal;
+                    });
+
+                    const total = schedules.length;
+                    const paginated = schedules.slice((currentPage - 1) * perPage, currentPage * perPage);
+
+                    return res.status(200).send({
+                        success: true,
+                        data: paginated,
+                        total,
+                        page: currentPage,
+                        limit: perPage,
+                        totalPages: Math.ceil(total / perPage)
+                    });
+                } else {
+                    // Normal DB-level sorting
+                    sortOptions[sortBy] = order === 'desc' ? -1 : 1;
+                    cursor = cursor.sort(sortOptions);
+                }
+
+                const total = await scheduleCollection.countDocuments(query);
+                const schedules = await cursor
+                    .skip((currentPage - 1) * perPage)
+                    .limit(perPage)
+                    .toArray();
+
+                res.status(200).send({
+                    success: true,
+                    data: schedules,
+                    total,
+                    page: currentPage,
+                    limit: perPage,
+                    totalPages: Math.ceil(total / perPage)
+                });
+
             } catch (error) {
-                console.error("❌ Error fetching schedules:", error);
+                console.error('❌ Error fetching schedules:', error);
+                res.status(500).send({ error: true, message: 'Internal Server Error' });
+            }
+        });
+
+        // GET /schedules/:id - Get a single schedule
+        app.get('/schedules/:id', verifyFirebaseToken, async (req, res) => {
+            try {
+                const { id } = req.params;
+                const email = req.user.email;
+
+                const schedule = await scheduleCollection.findOne({ id, createdBy: email });
+
+                if (!schedule) {
+                    return res.status(404).send({ success: false, message: "Schedule not found" });
+                }
+
+                res.status(200).send(schedule);
+            } catch (error) {
+                console.error("❌ Error fetching schedule:", error);
                 res.status(500).send({ error: true, message: "Internal Server Error" });
             }
         });
@@ -222,6 +308,74 @@ async function run() {
             }
         });
 
+        // PUT /schedules/:id - Update a schedule by ID
+        app.put('/schedules/:id', verifyFirebaseToken, async (req, res) => {
+            try {
+                const { id } = req.params;
+                const email = req.user.email;
+                const updatedData = req.body;
+
+                console.log("➡️ Incoming PUT request");
+                console.log("📌 ID:", id);
+                console.log("📌 Email:", email);
+                console.log("📌 Updated Data:", updatedData);
+
+                // 🔥 Remove fields that should not be updated
+                delete updatedData._id;
+                delete updatedData.createdBy;
+                delete updatedData.createdAt;
+
+                // ✅ Filter by id and createdBy
+                const filter = { id: id, createdBy: email };
+
+                // Prepare update object
+                const updateDoc = { $set: updatedData };
+
+                const result = await scheduleCollection.updateOne(filter, updateDoc);
+
+                console.log("✅ MongoDB update result:", result);
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).send({
+                        success: false,
+                        message: "Schedule not found or unauthorized"
+                    });
+                }
+
+                res.status(200).send({
+                    success: true,
+                    message: "Schedule updated successfully"
+                });
+
+            } catch (error) {
+                console.error("❌ Error updating schedule:", error);
+                res.status(500).send({
+                    error: true,
+                    message: "Internal Server Error"
+                });
+            }
+        });
+
+
+
+        // DELETE /schedules/:id - Delete a schedule by ID
+        app.delete('/schedules/:id', verifyFirebaseToken, async (req, res) => {
+            try {
+                const { id } = req.params;
+                const email = req.user.email;
+
+                const result = await scheduleCollection.deleteOne({ id: id, createdBy: email });
+
+                if (result.deletedCount === 0) {
+                    return res.status(404).send({ success: false, message: "Schedule not found or unauthorized" });
+                }
+
+                res.status(200).send({ success: true, message: "Schedule deleted successfully" });
+            } catch (error) {
+                console.error("❌ Error deleting schedule:", error);
+                res.status(500).send({ error: true, message: "Internal Server Error" });
+            }
+        });
 
 
         console.log("✅ Connected to MongoDB!");
