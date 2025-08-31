@@ -51,6 +51,7 @@ const client = new MongoClient(process.env.DB_URI, {
 const userCollection = client.db("studentLifeDb").collection("users");
 const scheduleCollection = client.db("studentLifeDb").collection("schedules");
 const budgetCollection = client.db("studentLifeDb").collection("budgets");
+const capsCollection = client.db("studentLifeDb").collection("caps");
 
 
 
@@ -379,38 +380,33 @@ async function run() {
 
         //********* Budget related APIs *********
 
+        // ✅ GET /budgets
         app.get('/budgets', verifyFirebaseToken, async (req, res) => {
             try {
                 const email = req.user.email;
                 const transactions = await budgetCollection
                     .find({ createdBy: email })
-                    .sort({ createdAt: -1 }) // Newest first
+                    .sort({ createdAt: -1 })
                     .toArray();
 
                 res.status(200).send({ success: true, data: transactions });
             } catch (error) {
-                console.error('❌ GET /budgets failed:', error);
-                res.status(500).send({ success: false, message: 'Internal server error' });
+                console.error('❌ GET /budgets failed:', error.message);
+                res.status(500).send({ success: false, message: 'Internal Server Error' });
             }
         });
 
-        // ✅ Enhanced GET /budgets/history with sorting & pagination
+        // ✅ GET /budgets/history with pagination
         app.get('/budgets/history', verifyFirebaseToken, async (req, res) => {
             try {
                 const email = req.user.email;
-
-                const {
-                    sort = 'desc', // default to latest first
-                    page = 1,
-                    limit = 25
-                } = req.query;
+                const { sort = 'desc', page = 1, limit = 25 } = req.query;
 
                 const sortOrder = sort === 'asc' ? 1 : -1;
-                const currentPage = parseInt(page) || 1;
-                const perPage = parseInt(limit) || 25;
+                const currentPage = Math.max(parseInt(page) || 1, 1);
+                const perPage = Math.min(parseInt(limit) || 25, 100);
 
                 const query = { createdBy: email };
-
                 const total = await budgetCollection.countDocuments(query);
 
                 const transactions = await budgetCollection
@@ -429,22 +425,65 @@ async function run() {
                     total
                 });
             } catch (error) {
-                console.error("❌ Error fetching transaction history:", error);
-                res.status(500).send({ success: false, message: "Internal Server Error" });
+                console.error('❌ GET /budgets/history failed:', error.message);
+                res.status(500).send({ success: false, message: 'Internal Server Error' });
             }
         });
 
+        // ✅ POST /budgets
         app.post('/budgets', verifyFirebaseToken, async (req, res) => {
             try {
-                const transaction = req.body;
-                transaction.createdAt = new Date().toISOString();
-                transaction.createdBy = req.user.email;
+                const transaction = {
+                    ...req.body,
+                    createdAt: new Date(),
+                    createdBy: req.user.email
+                };
 
                 const result = await budgetCollection.insertOne(transaction);
                 res.status(201).send({ success: true, insertedId: result.insertedId });
             } catch (error) {
-                console.error('❌ POST /budgets failed:', error);
-                res.status(500).send({ success: false, message: 'Internal server error' });
+                console.error('❌ POST /budgets failed:', error.message);
+                res.status(500).send({ success: false, message: 'Internal Server Error' });
+            }
+        });
+
+        // ✅ GET /budgets/caps
+        app.get('/budgets/caps', verifyFirebaseToken, async (req, res) => {
+            try {
+                const email = req.user.email;
+                const caps = await capsCollection.findOne({ createdBy: email });
+                res.status(200).send({ success: true, data: caps || { weeklyCap: 300, categoryCaps: {} } });
+            } catch (error) {
+                console.error('❌ GET /budgets/caps failed:', error.message);
+                res.status(500).send({ success: false, message: 'Internal Server Error' });
+            }
+        });
+
+        // ✅ POST /budgets/caps (create or update caps)
+        app.post('/budgets/caps', verifyFirebaseToken, async (req, res) => {
+            try {
+                const email = req.user.email;
+                const { weeklyCap, categoryCaps } = req.body;
+
+                const updateDoc = {
+                    $set: {
+                        weeklyCap,
+                        categoryCaps,
+                        updatedAt: new Date(),
+                        createdBy: email
+                    }
+                };
+
+                const result = await capsCollection.updateOne(
+                    { createdBy: email },
+                    updateDoc,
+                    { upsert: true }
+                );
+
+                res.status(200).send({ success: true });
+            } catch (error) {
+                console.error('❌ POST /budgets/caps failed:', error.message);
+                res.status(500).send({ success: false, message: 'Internal Server Error' });
             }
         });
 
