@@ -52,6 +52,7 @@ const userCollection = client.db("studentLifeDb").collection("users");
 const scheduleCollection = client.db("studentLifeDb").collection("schedules");
 const budgetCollection = client.db("studentLifeDb").collection("budgets");
 const capsCollection = client.db("studentLifeDb").collection("caps");
+const studyPlannerCollection = client.db("studentLifeDb").collection("studyPlanner");
 
 
 
@@ -452,7 +453,7 @@ async function run() {
             try {
                 const email = req.user.email;
                 const caps = await capsCollection.findOne({ createdBy: email });
-                res.status(200).send({ success: true, data: caps || { weeklyCap: 300, categoryCaps: {} } });
+                res.status(200).send({ success: true, data: caps || { weeklyCap: 500, categoryCaps: {} } });
             } catch (error) {
                 console.error('❌ GET /budgets/caps failed:', error.message);
                 res.status(500).send({ success: false, message: 'Internal Server Error' });
@@ -487,6 +488,179 @@ async function run() {
             }
         });
 
+
+        //**********Study Planner APIs**********
+        app.get('/study-planner', verifyFirebaseToken, async (req, res) => {
+            try {
+                const email = req.user.email;
+                const { search = '', sortBy = 'deadline', order = 'asc', page = 1, limit = 12 } = req.query;
+                const currentPage = parseInt(page) || 1;
+                const perPage = parseInt(limit) || 12;
+
+                const query = { createdBy: email };
+                if (search.trim()) {
+                    query.subject = { $regex: search.trim(), $options: 'i' };
+                }
+
+                const sortOptions = {};
+                if (sortBy === 'priority') {
+                    const aggregation = [
+                        { $match: query },
+                        {
+                            $addFields: {
+                                priorityValue: {
+                                    $switch: {
+                                        branches: [
+                                            { case: { $eq: ['$priority', 'high'] }, then: 1 },
+                                            { case: { $eq: ['$priority', 'medium'] }, then: 2 },
+                                            { case: { $eq: ['$priority', 'low'] }, then: 3 },
+                                        ],
+                                        default: 4,
+                                    },
+                                },
+                            },
+                        },
+                        { $sort: { priorityValue: order === 'desc' ? -1 : 1 } },
+                        { $skip: (currentPage - 1) * perPage },
+                        { $limit: perPage },
+                        { $project: { priorityValue: 0 } },
+                    ];
+
+                    const tasks = await studyPlannerCollection.aggregate(aggregation).toArray();
+                    const total = await studyPlannerCollection.countDocuments(query);
+
+                    return res.status(200).send({
+                        success: true,
+                        data: tasks,
+                        total,
+                        page: currentPage,
+                        limit: perPage,
+                        totalPages: Math.ceil(total / perPage),
+                    });
+                } else {
+                    sortOptions[sortBy] = order === 'desc' ? -1 : 1;
+                    const tasks = await studyPlannerCollection
+                        .find(query)
+                        .sort(sortOptions)
+                        .skip((currentPage - 1) * perPage)
+                        .limit(perPage)
+                        .toArray();
+
+                    const total = await studyPlannerCollection.countDocuments(query);
+                    res.status(200).send({
+                        success: true,
+                        data: tasks,
+                        total,
+                        page: currentPage,
+                        limit: perPage,
+                        totalPages: Math.ceil(total / perPage),
+                    });
+                }
+            } catch (error) {
+                console.error('Error fetching study planner tasks:', error);
+                res.status(500).send({ error: true, message: 'Internal Server Error' });
+            }
+        });
+
+        app.get('/study-planner/:id', verifyFirebaseToken, async (req, res) => {
+            try {
+                const { id } = req.params;
+                const email = req.user.email;
+                const task = await studyPlannerCollection.findOne({ id, createdBy: email });
+                if (!task) {
+                    return res.status(404).send({ success: false, message: 'Task not found' });
+                }
+                res.status(200).send(task);
+            } catch (error) {
+                console.error('Error fetching study planner task:', error);
+                res.status(500).send({ error: true, message: 'Internal Server Error' });
+            }
+        });
+
+        app.post('/study-planner', verifyFirebaseToken, async (req, res) => {
+            try {
+                const task = req.body;
+
+                // Validate required fields
+                if (!task.subject || !task.topic || !task.duration || !task.deadline) {
+                    return res.status(400).send({ error: true, message: 'Subject, topic, duration, and deadline are required' });
+                }
+                if (typeof task.duration !== 'number' || task.duration < 5) {
+                    return res.status(400).send({ error: true, message: 'Duration must be a number greater than or equal to 5' });
+                }
+                if (!['low', 'medium', 'high'].includes(task.priority)) {
+                    return res.status(400).send({ error: true, message: 'Priority must be low, medium, or high' });
+                }
+
+                // Generate custom ID
+                task.id = Date.now().toString();
+                task.createdAt = new Date().toISOString();
+                task.createdBy = req.user.email;
+
+                const result = await studyPlannerCollection.insertOne(task);
+                res.status(201).send({
+                    success: true,
+                    message: 'Study planner task added successfully',
+                    insertedId: result.insertedId,
+                });
+            } catch (error) {
+                console.error('Error adding study planner task:', error);
+                res.status(500).send({ error: true, message: 'Internal Server Error' });
+            }
+        });
+
+        app.put('/study-planner/:id', verifyFirebaseToken, async (req, res) => {
+            try {
+                const { id } = req.params;
+                const email = req.user.email;
+                const updatedData = req.body;
+
+                // Validate required fields
+                if (!updatedData.subject || !updatedData.topic || !updatedData.duration || !updatedData.deadline) {
+                    return res.status(400).send({ error: true, message: 'Subject, topic, duration, and deadline are required' });
+                }
+                if (typeof updatedData.duration !== 'number' || updatedData.duration < 5) {
+                    return res.status(400).send({ error: true, message: 'Duration must be a number greater than or equal to 5' });
+                }
+                if (!['low', 'medium', 'high'].includes(updatedData.priority)) {
+                    return res.status(400).send({ error: true, message: 'Priority must be low, medium, or high' });
+                }
+
+                delete updatedData._id;
+                delete updatedData.createdBy;
+                delete updatedData.createdAt;
+
+                const filter = { id, createdBy: email };
+                const updateDoc = { $set: updatedData };
+                const result = await studyPlannerCollection.updateOne(filter, updateDoc);
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).send({ success: false, message: 'Task not found or unauthorized' });
+                }
+
+                res.status(200).send({ success: true, message: 'Task updated successfully' });
+            } catch (error) {
+                console.error('Error updating study planner task:', error);
+                res.status(500).send({ error: true, message: 'Internal Server Error' });
+            }
+        });
+
+        app.delete('/study-planner/:id', verifyFirebaseToken, async (req, res) => {
+            try {
+                const { id } = req.params;
+                const email = req.user.email;
+                const result = await studyPlannerCollection.deleteOne({ id, createdBy: email });
+
+                if (result.deletedCount === 0) {
+                    return res.status(404).send({ success: false, message: 'Task not found or unauthorized' });
+                }
+
+                res.status(200).send({ success: true, message: 'Task deleted successfully' });
+            } catch (error) {
+                console.error('Error deleting study planner task:', error);
+                res.status(500).send({ error: true, message: 'Internal Server Error' });
+            }
+        });
 
 
 
