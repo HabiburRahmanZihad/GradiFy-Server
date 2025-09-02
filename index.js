@@ -53,7 +53,7 @@ const scheduleCollection = client.db("studentLifeDb").collection("schedules");
 const budgetCollection = client.db("studentLifeDb").collection("budgets");
 const capsCollection = client.db("studentLifeDb").collection("caps");
 const studyPlannerCollection = client.db("studentLifeDb").collection("studyPlanner");
-
+const questionsCollection = client.db("studentLifeDb").collection("questions");
 
 
 // ✅ Middleware to verify Firebase ID token and extract user info
@@ -658,6 +658,122 @@ async function run() {
                 res.status(200).send({ success: true, message: 'Task deleted successfully' });
             } catch (error) {
                 console.error('Error deleting study planner task:', error);
+                res.status(500).send({ error: true, message: 'Internal Server Error' });
+            }
+        });
+
+
+        //********** Questions related APIs **********
+
+        // GET /questions - Get all questions with pagination and category filtering
+        app.get('/questions', verifyFirebaseToken, async (req, res) => {
+            try {
+                const email = req.user.email;
+                const { category = '', difficulty = '', search = '', sortBy = 'id', order = 'asc', page = 1, limit = 10 } = req.query;
+                const currentPage = parseInt(page) || 1;
+                const perPage = parseInt(limit) || 10;
+
+                const doc = await questionsCollection.findOne(
+                    { createdBy: email },
+                    { projection: { web: 1, _id: 0 } }
+                );
+
+                if (!doc) {
+                    return res.status(200).send({
+                        success: true,
+                        data: [],
+                        total: 0,
+                        page: currentPage,
+                        limit: perPage,
+                        totalPages: 0,
+                        message: 'No questions available for this user.',
+                    });
+                }
+
+                const web = doc.web || {};
+                let selectedQs = [];
+
+                const catLower = category.toLowerCase();
+                if (category && ['html', 'css', 'javascript', 'react'].includes(catLower)) {
+                    selectedQs = (web[catLower] || []).map((q) => ({ ...q, category: catLower }));
+                } else {
+                    selectedQs = Object.entries(web).flatMap(([cat, qs]) =>
+                        qs.map((q) => ({ ...q, category: cat }))
+                    );
+                }
+
+                if (difficulty && ['easy', 'medium', 'high'].includes(difficulty.toLowerCase())) {
+                    selectedQs = selectedQs.filter((q) => q.difficulty.toLowerCase() === difficulty.toLowerCase());
+                }
+
+                if (search.trim()) {
+                    const regex = new RegExp(search.trim(), 'i');
+                    selectedQs = selectedQs.filter((q) => regex.test(q.question));
+                }
+
+                // Sort questions
+                if (sortBy) {
+                    selectedQs.sort((a, b) => {
+                        let va = a[sortBy];
+                        let vb = b[sortBy];
+                        if (va === undefined || vb === undefined) return 0;
+                        const dir = order === 'asc' ? 1 : -1;
+                        if (typeof va === 'string') {
+                            return dir * va.localeCompare(vb);
+                        }
+                        return dir * (va > vb ? 1 : va < vb ? -1 : 0);
+                    });
+                }
+
+                const total = selectedQs.length;
+                const startIndex = (currentPage - 1) * perPage;
+                const paginatedQuestions = selectedQs.slice(startIndex, startIndex + perPage);
+
+                res.status(200).send({
+                    success: true,
+                    data: paginatedQuestions,
+                    total,
+                    page: currentPage,
+                    limit: perPage,
+                    totalPages: Math.ceil(total / perPage),
+                });
+            } catch (error) {
+                console.error('❌ Error fetching questions:', error);
+                res.status(500).send({ error: true, message: 'Internal Server Error' });
+            }
+        });
+
+        // POST /questions - Add or update questions
+        app.post('/questions', verifyFirebaseToken, async (req, res) => {
+            try {
+                const email = req.user.email;
+                const { web } = req.body;
+
+                if (!web || typeof web !== 'object') {
+                    return res.status(400).send({ error: true, message: 'Invalid question data format. Expected "web" object.' });
+                }
+
+                const updateDoc = {
+                    $set: {
+                        web,
+                        createdBy: email,
+                        updatedAt: new Date().toISOString(),
+                    },
+                };
+
+                const result = await questionsCollection.updateOne(
+                    { createdBy: email },
+                    updateDoc,
+                    { upsert: true }
+                );
+
+                res.status(200).send({
+                    success: true,
+                    message: result.upsertedId ? 'Questions added successfully' : 'Questions updated successfully',
+                    insertedId: result.upsertedId,
+                });
+            } catch (error) {
+                console.error('❌ Error adding/updating questions:', error);
                 res.status(500).send({ error: true, message: 'Internal Server Error' });
             }
         });
