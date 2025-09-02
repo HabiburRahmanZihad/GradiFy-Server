@@ -54,6 +54,7 @@ const budgetCollection = client.db("studentLifeDb").collection("budgets");
 const capsCollection = client.db("studentLifeDb").collection("caps");
 const studyPlannerCollection = client.db("studentLifeDb").collection("studyPlanner");
 const questionsCollection = client.db("studentLifeDb").collection("questions");
+const studyMaterialsCollection = client.db("studentLifeDb").collection("studyMaterials");
 
 
 // ✅ Middleware to verify Firebase ID token and extract user info
@@ -778,6 +779,40 @@ async function run() {
             }
         });
 
+
+        app.get('/study-materials', verifyFirebaseToken, async (req, res) => {
+            try {
+                const email = req.user.email;
+                if (!email) {
+                    return res.status(400).send({
+                        error: true,
+                        message: 'User email not provided'
+                    });
+                }
+
+                const studyMaterials = await studyMaterialsCollection.findOne({ createdBy: email });
+
+                if (!studyMaterials) {
+                    return res.status(200).send({
+                        success: true,
+                        data: {},
+                        message: 'No study materials found for this user'
+                    });
+                }
+
+                res.status(200).send({
+                    success: true,
+                    data: studyMaterials.web
+                });
+            } catch (error) {
+                console.error('❌ Error fetching study materials:', error);
+                if (error.name === 'MongoError') {
+                    res.status(500).send({ error: true, message: 'Database error occurred' });
+                } else {
+                    res.status(500).send({ error: true, message: 'Internal Server Error' });
+                }
+            }
+        });
 
 
         console.log("✅ Connected to MongoDB!");
