@@ -55,7 +55,8 @@ const capsCollection = client.db("studentLifeDb").collection("caps");
 const studyPlannerCollection = client.db("studentLifeDb").collection("studyPlanner");
 const questionsCollection = client.db("studentLifeDb").collection("questions");
 const studyMaterialsCollection = client.db("studentLifeDb").collection("studyMaterials");
-
+const studyTimeCollection = client.db("studentLifeDb").collection("studyTime");
+const taskCollection = client.db("studentLifeDb").collection("tasks");
 
 // ✅ Middleware to verify Firebase ID token and extract user info
 const verifyFirebaseToken = async (req, res, next) => {
@@ -813,6 +814,151 @@ async function run() {
                 }
             }
         });
+
+
+        // ********* Task Planner APIs *********
+
+        // Get all tasks
+        app.get('/tasks', verifyFirebaseToken, async (req, res) => {
+            try {
+                const email = req.user.email;
+                const tasks = await taskCollection
+                    .find({ createdBy: email })
+                    .sort({ date: -1 })
+                    .toArray();
+
+                res.status(200).send(tasks);
+            } catch (error) {
+                console.error('❌ Error fetching tasks:', error);
+                res.status(500).send({ error: true, message: 'Internal Server Error' });
+            }
+        });
+
+        // Get single task by ID
+        app.get('/tasks/:id', verifyFirebaseToken, async (req, res) => {
+            try {
+                const { id } = req.params;
+                const email = req.user.email;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ error: true, message: 'Invalid task id' });
+                }
+
+                const task = await taskCollection.findOne({ _id: new ObjectId(id), createdBy: email });
+
+                if (!task) {
+                    return res.status(404).send({ success: false, message: 'Task not found or unauthorized' });
+                }
+
+                res.status(200).send(task);
+            } catch (error) {
+                console.error('❌ Error fetching single task:', error);
+                res.status(500).send({ error: true, message: 'Internal Server Error' });
+            }
+        });
+
+        // Get task statistics
+        app.get('/tasks/stats', verifyFirebaseToken, async (req, res) => {
+            try {
+                const email = req.user.email;
+
+                // Count pending and completed tasks
+                const pendingCount = await taskCollection.countDocuments({ createdBy: email, status: "pending" });
+                const completedCount = await taskCollection.countDocuments({ createdBy: email, status: "completed" });
+
+                res.status(200).send({
+                    success: true,
+                    pending: pendingCount,
+                    completed: completedCount,
+                    total: pendingCount + completedCount
+                });
+            } catch (error) {
+                console.error("❌ Error fetching task stats:", error);
+                res.status(500).send({ error: true, message: "Internal Server Error" });
+            }
+        });
+
+        // Add new task
+        app.post('/tasks', verifyFirebaseToken, async (req, res) => {
+            try {
+                const task = req.body;
+
+                if (!task.title || !task.date || !task.time || !task.duration) {
+                    return res.status(400).send({ error: true, message: 'Title, date, time and duration are required' });
+                }
+
+                task.id = Date.now().toString();
+                task.createdAt = new Date().toISOString();
+                task.createdBy = req.user.email;
+                task.status = task.status || "pending";
+                task.notes = task.notes?.trim() || '';
+                task.color = task.color || "#000000";
+
+                const result = await taskCollection.insertOne(task);
+                res.status(201).send({
+                    success: true,
+                    message: 'Task added successfully',
+                    insertedId: result.insertedId,
+                    data: { ...task, _id: result.insertedId }
+                });
+            } catch (error) {
+                console.error('❌ Error adding task:', error);
+                res.status(500).send({ error: true, message: 'Internal Server Error' });
+            }
+        });
+
+        // Update task (by _id)
+        app.put('/tasks/:id', verifyFirebaseToken, async (req, res) => {
+            try {
+                const { id } = req.params;
+                const email = req.user.email;
+                const updatedData = req.body;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ error: true, message: 'Invalid task id' });
+                }
+
+                delete updatedData._id; // prevent overwriting Mongo id
+
+                const filter = { _id: new ObjectId(id), createdBy: email };
+                const updateDoc = { $set: { ...updatedData, updatedAt: new Date().toISOString() } };
+
+                const result = await taskCollection.updateOne(filter, updateDoc);
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).send({ success: false, message: 'Task not found or unauthorized' });
+                }
+
+                res.status(200).send({ success: true, message: 'Task updated successfully' });
+            } catch (error) {
+                console.error('❌ Error updating task:', error);
+                res.status(500).send({ error: true, message: 'Internal Server Error' });
+            }
+        });
+
+        // Delete task (by _id)
+        app.delete('/tasks/:id', verifyFirebaseToken, async (req, res) => {
+            try {
+                const { id } = req.params;
+                const email = req.user.email;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ error: true, message: 'Invalid task id' });
+                }
+
+                const result = await taskCollection.deleteOne({ _id: new ObjectId(id), createdBy: email });
+
+                if (result.deletedCount === 0) {
+                    return res.status(404).send({ success: false, message: 'Task not found or unauthorized' });
+                }
+
+                res.status(200).send({ success: true, message: 'Task deleted successfully' });
+            } catch (error) {
+                console.error('❌ Error deleting task:', error);
+                res.status(500).send({ error: true, message: 'Internal Server Error' });
+            }
+        });
+
 
 
         console.log("✅ Connected to MongoDB!");
