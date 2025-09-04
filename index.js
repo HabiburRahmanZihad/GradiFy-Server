@@ -55,7 +55,6 @@ const capsCollection = client.db("studentLifeDb").collection("caps");
 const studyPlannerCollection = client.db("studentLifeDb").collection("studyPlanner");
 const questionsCollection = client.db("studentLifeDb").collection("questions");
 const studyMaterialsCollection = client.db("studentLifeDb").collection("studyMaterials");
-const studyTimeCollection = client.db("studentLifeDb").collection("studyTime");
 const taskCollection = client.db("studentLifeDb").collection("tasks");
 
 // ✅ Middleware to verify Firebase ID token and extract user info
@@ -399,22 +398,51 @@ async function run() {
             }
         });
 
-        // ✅ GET /budgets/history with pagination
+        // ✅ Enhanced GET /budgets/history with search, filter, sort, and pagination
         app.get('/budgets/history', verifyFirebaseToken, async (req, res) => {
             try {
                 const email = req.user.email;
-                const { sort = 'desc', page = 1, limit = 25 } = req.query;
+                const {
+                    sortBy = 'date',
+                    sortOrder = 'desc',
+                    page = 1,
+                    limit = 10,
+                    search = '',
+                    type = 'all'
+                } = req.query;
 
-                const sortOrder = sort === 'asc' ? 1 : -1;
                 const currentPage = Math.max(parseInt(page) || 1, 1);
-                const perPage = Math.min(parseInt(limit) || 25, 100);
+                const perPage = Math.min(parseInt(limit) || 10, 100);
 
+                // ✅ Construct query
                 const query = { createdBy: email };
+
+                if (search) {
+                    query.$or = [
+                        { subject: { $regex: search, $options: 'i' } },
+                        { description: { $regex: search, $options: 'i' } }
+                    ];
+                }
+
+                if (type !== 'all') {
+                    query.priority = type === 'income' ? { $ne: 'High' } : 'High';
+                }
+
+                // ✅ Map frontend sortBy to MongoDB field
+                const sortMap = {
+                    date: 'date',
+                    amount: 'description', // ⚠️ Only works if amount is in description
+                    category: 'subject'
+                };
+
+                const sortField = sortMap[sortBy] || 'date';
+                const sortDirection = sortOrder === 'asc' ? 1 : -1;
+
                 const total = await budgetCollection.countDocuments(query);
 
                 const transactions = await budgetCollection
                     .find(query)
-                    .sort({ date: sortOrder })
+                    .sort({ [sortField]: sortDirection })
                     .skip((currentPage - 1) * perPage)
                     .limit(perPage)
                     .toArray();
@@ -489,6 +517,31 @@ async function run() {
                 res.status(500).send({ success: false, message: 'Internal Server Error' });
             }
         });
+
+        const { ObjectId } = require('mongodb');
+
+        // ✅ DELETE /budgets/:id
+        app.delete('/budgets/:id', verifyFirebaseToken, async (req, res) => {
+            try {
+                const email = req.user.email;
+                const { id } = req.params;
+
+                const result = await budgetCollection.deleteOne({
+                    _id: new ObjectId(id),
+                    createdBy: email, // Optional: ensures users can only delete their own data
+                });
+
+                if (result.deletedCount === 1) {
+                    res.status(200).send({ success: true, message: 'Transaction deleted' });
+                } else {
+                    res.status(404).send({ success: false, message: 'Transaction not found' });
+                }
+            } catch (error) {
+                console.error('❌ DELETE /budgets/:id failed:', error.message);
+                res.status(500).send({ success: false, message: 'Internal Server Error' });
+            }
+        });
+
 
 
         //**********Study Planner APIs**********
