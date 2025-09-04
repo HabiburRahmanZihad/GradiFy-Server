@@ -720,20 +720,30 @@ async function run() {
 
         //********** Questions related APIs **********
 
-        // GET /questions - Get all questions with pagination and category filtering
-        app.get('/questions', verifyFirebaseToken, async (req, res) => {
+        // GET /questions - Get all questions with pagination and category filtering (accessible to all users)
+        app.get('/questions', async (req, res) => {
             try {
-                const email = req.user.email;
-                const { category = '', difficulty = '', search = '', sortBy = 'id', order = 'asc', page = 1, limit = 10 } = req.query;
+                const { category = '', difficulty = '', search = '', sortBy = 'id', order = 'asc', page = 1, limit = 10, createdBy } = req.query;
                 const currentPage = parseInt(page) || 1;
                 const perPage = parseInt(limit) || 10;
 
-                const doc = await questionsCollection.findOne(
-                    { createdBy: email },
-                    { projection: { web: 1, _id: 0 } }
-                );
+                // Build query based on parameters
+                const query = {};
 
-                if (!doc) {
+                // If createdBy is specified, filter by that user
+                if (createdBy) {
+                    query.createdBy = createdBy;
+                }
+
+                // If category is specified, filter by category
+                if (category && ['html', 'css', 'javascript', 'react'].includes(category.toLowerCase())) {
+                    query[`web.${category.toLowerCase()}`] = { $exists: true, $ne: [] };
+                }
+
+                // Find all documents that match the query
+                const docs = await questionsCollection.find(query).toArray();
+
+                if (!docs || docs.length === 0) {
                     return res.status(200).send({
                         success: true,
                         data: [],
@@ -741,34 +751,53 @@ async function run() {
                         page: currentPage,
                         limit: perPage,
                         totalPages: 0,
-                        message: 'No questions available for this user.',
+                        message: 'No questions available.',
                     });
                 }
 
-                const web = doc.web || {};
-                let selectedQs = [];
+                // Combine questions from all matching documents
+                let allQuestions = [];
+                for (const doc of docs) {
+                    const web = doc.web || {};
+                    let userQuestions = [];
 
-                const catLower = category.toLowerCase();
-                if (category && ['html', 'css', 'javascript', 'react'].includes(catLower)) {
-                    selectedQs = (web[catLower] || []).map((q) => ({ ...q, category: catLower }));
-                } else {
-                    selectedQs = Object.entries(web).flatMap(([cat, qs]) =>
-                        qs.map((q) => ({ ...q, category: cat }))
+                    const catLower = category.toLowerCase();
+                    if (category && ['html', 'css', 'javascript', 'react'].includes(catLower)) {
+                        userQuestions = (web[catLower] || []).map((q) => ({
+                            ...q,
+                            category: catLower,
+                            createdBy: doc.createdBy // Add createdBy info to each question
+                        }));
+                    } else {
+                        userQuestions = Object.entries(web).flatMap(([cat, qs]) =>
+                            qs.map((q) => ({
+                                ...q,
+                                category: cat,
+                                createdBy: doc.createdBy // Add createdBy info to each question
+                            }))
+                        );
+                    }
+                    allQuestions = allQuestions.concat(userQuestions);
+                }
+
+                // Apply difficulty filter
+                if (difficulty && ['easy', 'medium', 'high'].includes(difficulty.toLowerCase())) {
+                    allQuestions = allQuestions.filter((q) =>
+                        q.difficulty && q.difficulty.toLowerCase() === difficulty.toLowerCase()
                     );
                 }
 
-                if (difficulty && ['easy', 'medium', 'high'].includes(difficulty.toLowerCase())) {
-                    selectedQs = selectedQs.filter((q) => q.difficulty.toLowerCase() === difficulty.toLowerCase());
-                }
-
+                // Apply search filter
                 if (search.trim()) {
                     const regex = new RegExp(search.trim(), 'i');
-                    selectedQs = selectedQs.filter((q) => regex.test(q.question));
+                    allQuestions = allQuestions.filter((q) =>
+                        q.question && regex.test(q.question)
+                    );
                 }
 
                 // Sort questions
                 if (sortBy) {
-                    selectedQs.sort((a, b) => {
+                    allQuestions.sort((a, b) => {
                         let va = a[sortBy];
                         let vb = b[sortBy];
                         if (va === undefined || vb === undefined) return 0;
@@ -780,9 +809,9 @@ async function run() {
                     });
                 }
 
-                const total = selectedQs.length;
+                const total = allQuestions.length;
                 const startIndex = (currentPage - 1) * perPage;
-                const paginatedQuestions = selectedQs.slice(startIndex, startIndex + perPage);
+                const paginatedQuestions = allQuestions.slice(startIndex, startIndex + perPage);
 
                 res.status(200).send({
                     success: true,
@@ -797,7 +826,6 @@ async function run() {
                 res.status(500).send({ error: true, message: 'Internal Server Error' });
             }
         });
-
         // POST /questions - Add or update questions
         app.post('/questions', verifyFirebaseToken, async (req, res) => {
             try {
@@ -834,39 +862,59 @@ async function run() {
         });
 
 
-        app.get('/study-materials', verifyFirebaseToken, async (req, res) => {
-            try {
-                const email = req.user.email;
-                if (!email) {
-                    return res.status(400).send({
-                        error: true,
-                        message: 'User email not provided'
+app.get('/study-materials', verifyFirebaseToken, async (req, res) => {
+    try {
+        // Fetch study materials from ALL users
+        const studyMaterials = await studyMaterialsCollection.find(
+            {}, // Remove the createdBy filter to get all materials
+            { projection: { web: 1, createdBy: 1, _id: 0 } }
+        ).toArray();
+
+        if (!studyMaterials || studyMaterials.length === 0) {
+            return res.status(200).json({
+                success: true,
+                data: {},
+                message: 'No study materials found',
+            });
+        }
+
+        // Combine study materials from all users
+        const combinedMaterials = {};
+
+        studyMaterials.forEach(userMaterial => {
+            if (userMaterial.web) {
+                // Merge materials from all users
+                Object.keys(userMaterial.web).forEach(subject => {
+                    if (!combinedMaterials[subject]) {
+                        combinedMaterials[subject] = [];
+                    }
+
+                    // Add materials with user info
+                    userMaterial.web[subject].forEach(material => {
+                        combinedMaterials[subject].push({
+                            ...material,
+                            createdBy: userMaterial.createdBy // Add who created it
+                        });
                     });
-                }
-
-                const studyMaterials = await studyMaterialsCollection.findOne({ createdBy: email });
-
-                if (!studyMaterials) {
-                    return res.status(200).send({
-                        success: true,
-                        data: {},
-                        message: 'No study materials found for this user'
-                    });
-                }
-
-                res.status(200).send({
-                    success: true,
-                    data: studyMaterials.web
                 });
-            } catch (error) {
-                console.error('❌ Error fetching study materials:', error);
-                if (error.name === 'MongoError') {
-                    res.status(500).send({ error: true, message: 'Database error occurred' });
-                } else {
-                    res.status(500).send({ error: true, message: 'Internal Server Error' });
-                }
             }
         });
+
+        return res.status(200).json({
+            success: true,
+            data: combinedMaterials,
+        });
+    } catch (error) {
+        console.error('❌ Error fetching study materials:', error);
+
+        return res.status(500).json({
+            error: true,
+            message: error.name === 'MongoError'
+                ? 'Database error occurred'
+                : 'Internal Server Error',
+        });
+    }
+});
 
 
         // ********* Task Planner APIs *********
