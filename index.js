@@ -120,7 +120,6 @@ async function run() {
             try {
                 const email = req.params.email;
 
-                // Authorization check - users can only access their own data
                 if (req.user.email !== email) {
                     return res.status(403).send({
                         error: true,
@@ -128,17 +127,13 @@ async function run() {
                     });
                 }
 
-                // Find the user by email and return full record
                 const user = await userCollection.findOne({ email });
 
                 if (!user) {
-                    return res.status(404).send({
-                        error: true,
-                        message: "User not found."
-                    });
+                    return res.status(200).send({ exists: false });
                 }
 
-                res.send(user);
+                res.send({ exists: true, user });
             } catch (error) {
                 console.error("❌ Error fetching user:", error);
                 res.status(500).send({ error: true, message: "Internal Server Error" });
