@@ -433,11 +433,6 @@ async function run() {
                 const email = req.user.email;
                 const updatedData = req.body;
 
-                console.log("➡️ Incoming PUT request");
-                console.log("📌 ID:", id);
-                console.log("📌 Email:", email);
-                console.log("📌 Updated Data:", updatedData);
-
                 // 🔥 Remove fields that should not be updated
                 delete updatedData._id;
                 delete updatedData.createdBy;
