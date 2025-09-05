@@ -120,12 +120,27 @@ async function run() {
             try {
                 const email = req.params.email;
 
+                // Authorization check - users can only access their own data
+                if (req.user.email !== email) {
+                    return res.status(403).send({
+                        error: true,
+                        message: "Access denied."
+                    });
+                }
+
                 // Find the user by email and return full record
                 const user = await userCollection.findOne({ email });
 
+                if (!user) {
+                    return res.status(404).send({
+                        error: true,
+                        message: "User not found."
+                    });
+                }
+
                 res.send(user);
             } catch (error) {
-                console.error("❌ Error checking user existence:", error);
+                console.error("❌ Error fetching user:", error);
                 res.status(500).send({ error: true, message: "Internal Server Error" });
             }
         });
@@ -174,6 +189,7 @@ async function run() {
                 // If user is new, set creation and login timestamps
                 user.createdAt = user.createdAt || new Date().toISOString();
                 user.lastLogin = new Date().toISOString();
+                user.role = user.role || 'user';
 
                 // Insert new user
                 const result = await userCollection.insertOne(user);
@@ -187,6 +203,109 @@ async function run() {
             } catch (error) {
                 console.error("❌ Error inserting/updating user:", error);
                 return res.status(500).send({ error: true, message: "Internal Server Error" });
+            }
+        });
+
+        // ✅ PUT /users/:email - Update user profile information
+        app.put('/users/:email', verifyFirebaseToken, async (req, res) => {
+            try {
+                const email = req.params.email;
+                const updateData = req.body;
+
+                // Validate that the authenticated user can only update their own data
+                if (req.user.email !== email) {
+                    return res.status(403).send({
+                        error: true,
+                        message: "You can only update your own profile."
+                    });
+                }
+
+                // Check if user exists
+                const existingUser = await userCollection.findOne({ email });
+                if (!existingUser) {
+                    return res.status(404).send({
+                        error: true,
+                        message: "User not found."
+                    });
+                }
+
+                // Validate update data - only allow specific fields to be updated
+                const allowedFields = ['name', 'profilePhoto'];
+                const updateFields = {};
+
+                for (const field of allowedFields) {
+                    if (updateData[field] !== undefined) {
+                        updateFields[field] = updateData[field];
+                    }
+                }
+
+                // Add update timestamp
+                updateFields.updatedAt = new Date().toISOString();
+
+                // Update user document
+                const result = await userCollection.updateOne(
+                    { email },
+                    { $set: updateFields }
+                );
+
+                if (result.modifiedCount === 0) {
+                    return res.status(200).send({
+                        success: true,
+                        message: "No changes detected."
+                    });
+                }
+
+                // Fetch and return the updated user
+                const updatedUser = await userCollection.findOne({ email });
+
+                return res.status(200).send({
+                    success: true,
+                    message: "User profile updated successfully.",
+                    data: updatedUser
+                });
+
+            } catch (error) {
+                console.error("❌ Error updating user:", error);
+                return res.status(500).send({
+                    error: true,
+                    message: "Internal Server Error"
+                });
+            }
+        });
+
+        // ✅ DELETE /users/:email - Delete user account (optional)
+        app.delete('/users/:email', verifyFirebaseToken, async (req, res) => {
+            try {
+                const email = req.params.email;
+
+                // Authorization check
+                if (req.user.email !== email) {
+                    return res.status(403).send({
+                        error: true,
+                        message: "You can only delete your own account."
+                    });
+                }
+
+                const result = await userCollection.deleteOne({ email });
+
+                if (result.deletedCount === 0) {
+                    return res.status(404).send({
+                        error: true,
+                        message: "User not found."
+                    });
+                }
+
+                return res.status(200).send({
+                    success: true,
+                    message: "User account deleted successfully."
+                });
+
+            } catch (error) {
+                console.error("❌ Error deleting user:", error);
+                return res.status(500).send({
+                    error: true,
+                    message: "Internal Server Error"
+                });
             }
         });
 
@@ -517,8 +636,6 @@ async function run() {
                 res.status(500).send({ success: false, message: 'Internal Server Error' });
             }
         });
-
-        const { ObjectId } = require('mongodb');
 
         // ✅ DELETE /budgets/:id
         app.delete('/budgets/:id', verifyFirebaseToken, async (req, res) => {
@@ -862,59 +979,59 @@ async function run() {
         });
 
 
-app.get('/study-materials', verifyFirebaseToken, async (req, res) => {
-    try {
-        // Fetch study materials from ALL users
-        const studyMaterials = await studyMaterialsCollection.find(
-            {}, // Remove the createdBy filter to get all materials
-            { projection: { web: 1, createdBy: 1, _id: 0 } }
-        ).toArray();
+        app.get('/study-materials', verifyFirebaseToken, async (req, res) => {
+            try {
+                // Fetch study materials from ALL users
+                const studyMaterials = await studyMaterialsCollection.find(
+                    {}, // Remove the createdBy filter to get all materials
+                    { projection: { web: 1, createdBy: 1, _id: 0 } }
+                ).toArray();
 
-        if (!studyMaterials || studyMaterials.length === 0) {
-            return res.status(200).json({
-                success: true,
-                data: {},
-                message: 'No study materials found',
-            });
-        }
-
-        // Combine study materials from all users
-        const combinedMaterials = {};
-
-        studyMaterials.forEach(userMaterial => {
-            if (userMaterial.web) {
-                // Merge materials from all users
-                Object.keys(userMaterial.web).forEach(subject => {
-                    if (!combinedMaterials[subject]) {
-                        combinedMaterials[subject] = [];
-                    }
-
-                    // Add materials with user info
-                    userMaterial.web[subject].forEach(material => {
-                        combinedMaterials[subject].push({
-                            ...material,
-                            createdBy: userMaterial.createdBy // Add who created it
-                        });
+                if (!studyMaterials || studyMaterials.length === 0) {
+                    return res.status(200).json({
+                        success: true,
+                        data: {},
+                        message: 'No study materials found',
                     });
+                }
+
+                // Combine study materials from all users
+                const combinedMaterials = {};
+
+                studyMaterials.forEach(userMaterial => {
+                    if (userMaterial.web) {
+                        // Merge materials from all users
+                        Object.keys(userMaterial.web).forEach(subject => {
+                            if (!combinedMaterials[subject]) {
+                                combinedMaterials[subject] = [];
+                            }
+
+                            // Add materials with user info
+                            userMaterial.web[subject].forEach(material => {
+                                combinedMaterials[subject].push({
+                                    ...material,
+                                    createdBy: userMaterial.createdBy // Add who created it
+                                });
+                            });
+                        });
+                    }
+                });
+
+                return res.status(200).json({
+                    success: true,
+                    data: combinedMaterials,
+                });
+            } catch (error) {
+                console.error('❌ Error fetching study materials:', error);
+
+                return res.status(500).json({
+                    error: true,
+                    message: error.name === 'MongoError'
+                        ? 'Database error occurred'
+                        : 'Internal Server Error',
                 });
             }
         });
-
-        return res.status(200).json({
-            success: true,
-            data: combinedMaterials,
-        });
-    } catch (error) {
-        console.error('❌ Error fetching study materials:', error);
-
-        return res.status(500).json({
-            error: true,
-            message: error.name === 'MongoError'
-                ? 'Database error occurred'
-                : 'Internal Server Error',
-        });
-    }
-});
 
 
         // ********* Task Planner APIs *********
